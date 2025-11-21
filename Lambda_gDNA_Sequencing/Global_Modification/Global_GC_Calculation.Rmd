@@ -1,0 +1,59 @@
+---
+title: "GC_Global_Calculation"
+author: "Jojo Zhu"
+date: "2025-10-05"
+output: html_document
+---
+
+```{r}
+# Load required packages
+library(tidyverse)
+library(dplyr)
+
+# List of input files
+cov_files <- paste0("S", 1:11, "-GC-cov.txt")
+
+# Initialize results table
+results <- data.frame(
+  sample = character(),
+  percentage_reads_as_C = numeric(),
+  average_modification = numeric(),
+  stringsAsFactors = FALSE
+)
+
+# Loop over files
+for (f in cov_files) {
+  Input <- read.table(f, header = TRUE, stringsAsFactors = FALSE)
+  
+  # --- Core processing steps ---
+  colnames(Input) <- c("chromosome", "position", "strand", "count_methylated",
+                       "count_unmethylated", "C_context", "trinucleotide_context")
+  
+  Input <- Input %>%
+    na.omit() %>%
+    arrange(position) %>%
+    mutate(total_count = count_methylated + count_unmethylated)
+  
+  Filtered_Input <- Input %>% filter(total_count > 5)
+  
+  # --- Summary statistics ---
+  total_reads <- sum(Filtered_Input$count_methylated + Filtered_Input$count_unmethylated)
+  perc_C <- sum(Filtered_Input$count_methylated) / total_reads * 100
+  avg_mod <- mean(Filtered_Input$count_methylated / (Filtered_Input$count_methylated + Filtered_Input$count_unmethylated), na.rm = TRUE) * 100
+  
+  sample_name <- sub("-GC-cov\\.txt$", "", f)
+  
+  results <- rbind(results, data.frame(
+    sample = sample_name,
+    percentage_reads_as_C = perc_C,
+    average_modification = avg_mod
+  ))
+}
+
+print(results)
+
+# Save summary table
+write.table(results, "GC_mod_summary.txt", sep = "\t", quote = FALSE, row.names = FALSE)
+
+```
+

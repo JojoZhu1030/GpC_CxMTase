@@ -1,0 +1,87 @@
+---
+title: "Cov_File_Split"
+author: "Jojo Zhu"
+date: "2025-07-29"
+output: html_document
+---
+
+```{r}
+# Load libraries
+library(ggseqlogo)
+library(Biostrings)
+library(data.table)
+
+# Parameters 
+window <- 2
+
+# Input files
+cov_files <- c("WT_CxSAM_rep1.cov") # input cov files
+
+fasta_file <- "lambda.fa"
+
+# Load reference genome
+ref <- readDNAStringSet(fasta_file)
+names(ref) <- sub(" .*", "", names(ref))
+
+# Define function to extract strand-corrected window
+get_strand_corrected_window_seq <- function(chr, pos, window) {
+  if (!chr %in% names(ref)) return(list(seq = NA, strand = NA))
+  seq <- ref[[chr]]
+  start <- pos - window
+  end <- pos + window
+  if (start < 1 || end > length(seq)) return(list(seq = NA, strand = NA))
+  
+  win <- subseq(seq, start, end)
+  center_base <- as.character(subseq(seq, pos, pos))
+  
+  if (center_base == "C") {
+    win_char <- as.character(win)
+    if (substr(win_char, window + 1, window + 1) != "C") return(list(seq = NA, strand = NA))
+    return(list(seq = win_char, strand = "+"))
+  }
+  if (center_base == "G") {
+    win_rc <- reverseComplement(win)
+    win_char <- as.character(win_rc)
+    if (substr(win_char, window + 1, window + 1) != "C") return(list(seq = NA, strand = NA))
+    return(list(seq = win_char, strand = "-"))
+  }
+  return(list(seq = NA, strand = NA))
+}
+
+# Loop through cov files
+for (cov_file in cov_files) {
+  sample_id <- tools::file_path_sans_ext(basename(cov_file))
+  
+  cov <- fread(cov_file, header = FALSE)
+  colnames(cov) <- c("chr", "start", "end", "meth_pct", "meth_ct", "unmeth_ct")
+  
+  seq_strand_list <- mapply(
+    get_strand_corrected_window_seq,
+    chr = cov$chr,
+    pos = cov$start,
+    MoreArgs = list(window = window),
+    SIMPLIFY = FALSE
+  )
+  seq_strand_dt <- rbindlist(seq_strand_list)
+  cov[, `:=`(seq = seq_strand_dt$seq, strand = seq_strand_dt$strand)]
+  cov <- cov[!is.na(seq)]
+  
+  cov[, context_tag := "NNN"]
+  cov[, seq_suffix := substr(seq, nchar(seq) - 2, nchar(seq))]
+  cov[, minus1_pos := substr(seq, 2, 2)]
+  cov[, plus1_pos := substr(seq, 4, 4)]
+
+  # GC context
+  cov_GC <- cov[minus1_pos == "G"]
+  cov_GC_cleaned <- cov_GC[, .(chr, start, strand, meth_ct, unmeth_ct, context_tag, seq_suffix)]
+  fwrite(cov_GC_cleaned, file = paste0(sample_id, "-GC-cov.txt"), sep = "\t", quote = FALSE, col.names = FALSE)
+  
+  # CG context
+  cov_CG <- cov[plus1_pos == "G"]
+  cov_CG_cleaned <- cov_CG[, .(chr, start, strand, meth_ct, unmeth_ct, context_tag, seq_suffix)]
+  fwrite(cov_CG_cleaned, file = paste0(sample_id, "-CG-cov.txt"), sep = "\t", quote = FALSE, col.names = FALSE)
+}
+
+```
+
+

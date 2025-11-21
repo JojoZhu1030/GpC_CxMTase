@@ -1,0 +1,86 @@
+---
+title: "Lambda_Global_Barplots"
+author: "Jojo Zhu"
+date: "2025-10-06"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(readxl)
+
+# --- Read Excel file ---
+data <- read_excel("Lambda_Sequencing_WCG_Global.xlsx") 
+
+colnames(data) <- c("sample_id", "exp1", "exp2", "exp3")
+
+# --- Reshape data to long format ---
+data_long <- data %>%
+  pivot_longer(cols = 2:4, names_to = "experiment", values_to = "percent_C")
+
+# --- Calculate summary statistics per sample ---
+summary_stats <- data_long %>%
+  group_by(sample_id) %>%
+  summarise(
+    mean_C = mean(percent_C, na.rm = TRUE),
+    sd_C = sd(percent_C, na.rm = TRUE)
+  )
+
+# --- Plot with mean labels ---
+ggplot(summary_stats, aes(x = sample_id, y = mean_C)) +
+  geom_col(fill = "lightblue", width = 0.6) +           # bar for mean
+  geom_errorbar(aes(ymin = mean_C - sd_C, ymax = mean_C + sd_C),
+                width = 0.2, color = "black") +        # error bars
+  geom_jitter(data = data_long, aes(x = sample_id, y = percent_C),
+              width = 0.15, height = 0, color = "red", size = 2) +  # individual points
+  geom_text(aes(label = round(mean_C*100, 1)),               # label mean
+            vjust = -2.5, size = 3) +
+  theme_minimal() +
+  labs(x = "Sample", y = "% Reads as C", title = "% Reads as C per Sample") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+  scale_y_continuous(limits = c(0, 1))
+
+# the black lines denote standard deviation
+```
+
+```{r}
+# one-way ANOVA and Tukey's HSD post-hoc test
+# nothing but 2 is significantly different
+
+# Ensure sample_id is a factor
+data_long$sample_id <- as.factor(data_long$sample_id)
+
+# Run one-way ANOVA
+anova_res <- aov(percent_C ~ sample_id, data = data_long)
+anova_summary <- summary(anova_res)
+print(anova_summary)
+
+# Run Tukey's HSD post-hoc test
+tukey_res <- TukeyHSD(anova_res)
+print(tukey_res)
+
+# Convert to data frame automatically, no matter your factor name
+tukey_df <- as.data.frame(tukey_res[[1]])
+tukey_df$comparison <- rownames(tukey_df)
+
+# Function to assign significance stars
+p_to_stars <- function(p) {
+  if (p < 0.001) {
+    "***"
+  } else if (p < 0.01) {
+    "**"
+  } else if (p < 0.05) {
+    "*"
+  } else {
+    "ns"
+  }
+}
+
+# Add a significance column
+tukey_df$significance <- sapply(tukey_df$`p adj`, p_to_stars)
+
+# View results with stars
+tukey_df[, c("comparison", "diff", "p adj", "significance")]
+
+```
+
