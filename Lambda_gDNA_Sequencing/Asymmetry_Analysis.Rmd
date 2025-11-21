@@ -1,0 +1,181 @@
+---
+title: "Asymmetry"
+author: "Jojo Zhu"
+date: "2025-07-29"
+output: html_document
+---
+
+```{r, M.CviPI WT}
+# Load required packages
+library(tidyverse)
+library(ggplot2)
+
+# Define list of input files
+input_files <- c("BS-WT-SAM-GC-cov.txt")  # input split cov txt files
+
+# Loop over each file
+for (file in input_files) {
+  
+  sample_id <- tools::file_path_sans_ext(basename(file))
+  
+  Input <- read_delim(file, delim = "\t", col_names = FALSE, show_col_types = FALSE) %>%
+    as_tibble()
+
+  colnames(Input) <- c("chromosome", "position", "strand", "count_methylated",
+                       "count_unmethylated", "C_context", "trinucleotide_context")
+
+  Input <- na.omit(Input) %>%
+    arrange(position) %>%
+    mutate(total_count = count_methylated + count_unmethylated)
+
+  Filtered_Input <- Input %>%
+    filter(total_count > 15)
+
+  Paired_Input <- Filtered_Input %>%
+    mutate(paired = ifelse((lead(position) == position + 1) | (lag(position) == position - 1), 1, 0))
+
+  Cleaned_Input <- Paired_Input %>%
+    filter(paired == 1) %>%
+    mutate(mod_percentage = count_methylated / total_count)
+
+  data_initial <- Cleaned_Input
+  data_sense <- data_initial %>% filter(strand == "+") %>% mutate(sense = position)
+  data_antisense <- data_initial %>% filter(strand == "-") %>% mutate(sense = position + 1)
+
+  data2 <- bind_rows(data_sense, data_antisense) %>%
+    group_by(sense) %>%
+    mutate(both_ends = toString(trinucleotide_context))
+
+  data_sense <- data2 %>% filter(strand == "+")
+  data_antisense <- data2 %>% filter(strand == "-")
+
+  data_sense <- data_sense %>%
+    mutate(opp_minus_two_pos = str_sub(both_ends, -2, -2),
+           minus_two_pos = case_when(
+             opp_minus_two_pos == "C" ~ "G",
+             opp_minus_two_pos == "G" ~ "C",
+             opp_minus_two_pos == "A" ~ "T",
+             opp_minus_two_pos == "T" ~ "A"
+           ),
+           plus_one_pos = str_sub(both_ends, 2, 2))
+
+  data_antisense <- data_antisense %>%
+    mutate(opp_minus_two_pos = str_sub(both_ends, 2, 2),
+           minus_two_pos = case_when(
+             opp_minus_two_pos == "C" ~ "G",
+             opp_minus_two_pos == "G" ~ "C",
+             opp_minus_two_pos == "A" ~ "T",
+             opp_minus_two_pos == "T" ~ "A"
+           ),
+           plus_one_pos = str_sub(both_ends, -2, -2))
+
+  data_total <- bind_rows(data_sense, data_antisense) %>%
+    ungroup() %>%
+    arrange(position) %>%
+    mutate(tetramer_context = paste0(minus_two_pos, "GC", plus_one_pos))
+
+  # Compute asymmetry 
+  data_combined <- data_total %>%
+    select(strand, sense, mod_percentage) %>%
+    pivot_wider(names_from = strand, values_from = mod_percentage) %>%
+    rename(C_position = sense) %>%
+    filter((`+` + `-`) > 0) %>%
+    mutate(
+      total_mod = (`+` + `-`) ,
+      asymmetry = ifelse(total_mod > 0, abs(`+` - `-`) / total_mod, NA_real_)
+    )
+ 
+  # Downsample data_combined to max 1000 dyads
+  data_combined <- data_combined %>% ungroup()
+
+  if (nrow(data_combined) > 1000) {
+    data_combined <- sample_n(data_combined, 1000)
+  }
+
+  correlation <- cor(data_combined$`-`, data_combined$`+`, method = "pearson", use = "complete.obs")
+
+  # Asymmetry plot
+  scatter_plot <- ggplot(data_combined, aes(x = `-`, y = `+`, color = asymmetry)) +
+    geom_point(alpha = 0.6, size = 2) +
+    labs(
+      title = paste(sample_id, "- Sense-Antisense Modification Correlation"),
+      subtitle = paste("Pearson Correlation:", round(correlation, 3)),
+      x = "AntiSense",
+      y = "Sense",
+      color = "Asymmetry"
+    ) +
+    theme_minimal() +
+    coord_fixed(ratio = 1) +
+    xlim(0, 1) +
+    ylim(0, 1) +
+    scale_color_gradientn(
+      colors = c("#5A189A", "#2D6A4F", "#FFD60A"),
+      values = scales::rescale(c(0, 0.5, 1)),
+      limits = c(0, 1),
+      na.value = "grey90"
+    ) +
+    theme(panel.background = element_rect(fill = NA), legend.position = "right")
+  
+  print(scatter_plot)
+  
+  ggsave(filename = file.path("graphs", paste0(sample_id, "_AsymmetryScatter.png")),
+         plot = scatter_plot,
+         width = 7, height = 6, dpi = 300, bg = "transparent")
+
+# Context Boxplots 
+  data_context <- data_total %>%
+    ungroup() %>%
+    select(strand, mod_percentage, minus_two_pos, plus_one_pos, tetramer_context)
+
+# Downsample data_combined to max 2000 sites
+  if (nrow(data_context) > 2000) {
+    data_context <- sample_n(data_context, 2000)
+  }
+  
+# Plot for plus_one_pos with CGA, CGT, CGG, CGC
+context_plot_plus1 <- ggplot(data_context, aes(x = plus_one_pos, y = mod_percentage, fill = plus_one_pos)) +
+  geom_boxplot(alpha = 0.6, color = "black", outlier.shape = NA) +
+  geom_jitter(aes(color = plus_one_pos), width = 0.2, size = 2, alpha = 0.6) +
+  stat_summary(fun = "mean", geom = "point", size = 3, shape = 21, fill = "red") +
+  labs(
+    title = paste(sample_id, "- Modification by Plus One Position"),
+    x = "Plus One Position",
+    y = "Modification Percentage"
+  ) +
+  scale_x_discrete(labels = c("A" = "GCA", "T" = "GCT", "C" = "GCC", "G" = "GCG")) +
+  theme_minimal() +
+  theme(legend.position = "none", panel.background = element_rect(fill = NA))
+
+print(context_plot_plus1)
+
+ggsave(filename = file.path("graphs", paste0(sample_id, "_Context_plus_one_pos.png")),
+       plot = context_plot_plus1,
+       width = 6, height = 5, dpi = 300, bg = "transparent")
+
+
+# Plot for minus_two_pos with AGC, TGC, GGC, CGC
+context_plot_minus2 <- ggplot(data_context, aes(x = minus_two_pos, y = mod_percentage, fill = minus_two_pos)) +
+  geom_boxplot(alpha = 0.6, color = "black", outlier.shape = NA) +
+  geom_jitter(aes(color = minus_two_pos), width = 0.2, size = 2, alpha = 0.6) +
+  stat_summary(fun = "mean", geom = "point", size = 3, shape = 21, fill = "red") +
+  labs(
+    title = paste(sample_id, "- Modification by Minus Two Position"),
+    x = "Minus Two Position",
+    y = "Modification Percentage"
+  ) +
+  scale_x_discrete(labels = c("A" = "AGC", "T" = "TGC", "G" = "GGC", "C" = "CGC")) +
+  theme_minimal() +
+  theme(legend.position = "none", panel.background = element_rect(fill = NA))
+
+print(context_plot_minus2)
+
+ggsave(filename = file.path("graphs", paste0(sample_id, "_Context_minus_two_pos.png")),
+       plot = context_plot_minus2,
+       width = 6, height = 5, dpi = 300, bg = "transparent")
+
+  message("Finished processing: ", file)
+}
+
+```
+
+

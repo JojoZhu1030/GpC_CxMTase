@@ -1,0 +1,105 @@
+---
+title: "Sequence_Logo"
+author: "Jojo Zhu"
+date: "2025-07-28"
+output: html_document
+---
+
+```{r}
+# Load libraries
+library(ggseqlogo)
+library(Biostrings)
+library(data.table)
+library(ggplot2)
+
+# Parameters
+window <- 4
+fasta_file <- "lambda.fa"
+cov_files <- c("WT_CxSAM_rep1.cov") # input cov files
+
+# Load reference genome
+ref <- readDNAStringSet(fasta_file)
+names(ref) <- sub(" .*", "", names(ref))
+
+# Define helper function
+get_strand_corrected_window_seq <- function(chr, pos, window) {
+  if (!chr %in% names(ref)) return(NA)
+  seq <- ref[[chr]]
+  start <- pos - window
+  end <- pos + window
+  if (start < 1 || end > length(seq)) return(NA)
+  win <- subseq(seq, start, end)
+  center_base <- as.character(subseq(seq, pos, pos))
+  if (center_base == "C") {
+    win_char <- as.character(win)
+    if (substr(win_char, window + 1, window + 1) != "C") return(NA)
+    return(win_char)
+  }
+  if (center_base == "G") {
+    win_rc <- reverseComplement(win)
+    win_char <- as.character(win_rc)
+    if (substr(win_char, window + 1, window + 1) != "C") return(NA)
+    return(win_char)
+  }
+  return(NA)
+}
+
+# Loop over cov files
+for (cov_file in cov_files) {
+  # Load .cov file
+  cov <- fread(cov_file, header = FALSE)
+  colnames(cov) <- c("chr", "start", "end", "meth_pct", "meth_ct", "unmeth_ct")
+  cov[, total := meth_ct + unmeth_ct]
+  cov <- cov[total > 3]
+  
+  # Extract sequence
+  cov[, seq := mapply(get_strand_corrected_window_seq, chr, start, MoreArgs = list(window = window))]
+  cov <- cov[!is.na(seq)]
+  cov[, meth_prob := meth_pct / 100]
+  cov_use <- cov[nchar(seq) == (2 * window + 1)]
+
+  # Make character matrix
+  seq_mat <- do.call(rbind, strsplit(cov_use$seq, split = ""))
+  stopifnot(nrow(seq_mat) == nrow(cov_use))
+  
+  # Methylation matrix
+  alphabet <- c("A", "C", "G", "T")
+  L <- ncol(seq_mat)
+  meth_mat <- matrix(0, nrow = 4, ncol = L, dimnames = list(alphabet, 1:L))
+  count_mat <- matrix(0, nrow = 4, ncol = L, dimnames = list(alphabet, 1:L))
+  for (i in 1:L) {
+    bases_at_pos <- seq_mat[, i]
+    for (base in alphabet) {
+      idx <- which(bases_at_pos == base)
+      meth_mat[base, i] <- sum(cov_use$meth_prob[idx])
+      count_mat[base, i] <- length(idx)
+    }
+  }
+  avg_meth_raw <- meth_mat / pmax(count_mat, 1)
+  avg_meth_mat <- apply(avg_meth_raw, 2, function(col) col / sum(col))
+  
+  # Plot
+  plot_title <- gsub(".cov", "", cov_file)
+  p <- ggseqlogo(avg_meth_mat, method = "custom") +
+    ggtitle(paste0("Methylation-Weighted Logo: ", plot_title)) +
+    theme_minimal() +
+    geom_vline(xintercept = window + 1, linetype = "dashed", color = "gray40") +
+    scale_x_continuous(
+      breaks = 1:L,
+      labels = -window:window,
+      name = "Position relative to Modified C"
+    ) +
+    ylab("Probability")
+  print(p)
+  # Save to PNG with 300 dpi
+  ggsave(
+    filename = paste0(plot_title, "_meth_logo.png"),
+    plot = p,
+    width = 8,
+    height = 4,
+    dpi = 300
+  )
+}
+
+```
+

@@ -1,0 +1,104 @@
+---
+title: "BSACECorrelation"
+author: "Jojo Zhu"
+date: "2025-10-07"
+output: html_document
+---
+
+Import Data 
+```{r}
+# Load required packages
+library(tidyverse)
+library(ggplot2)
+library(scales)
+
+```
+
+
+```{r}
+BS <- read_delim("YK_cxSAM_BS-cov.txt", delim = "\t", col_names = FALSE, show_col_types = FALSE) %>%
+    as_tibble()
+
+ACE <- read_delim("YK_cxSAM_ACE-cov.txt", delim = "\t", col_names = FALSE, show_col_types = FALSE) %>%
+    as_tibble()
+
+colnames(BS) <- c("chromosome", "position", "strand", "count_methylated",
+                       "count_unmethylated", "C_context", "trinucleotide_context")
+
+colnames(ACE) <- c("chromosome", "position", "strand", "count_methylated",
+                       "count_unmethylated", "C_context", "trinucleotide_context")
+
+```
+
+
+Clean and Format Data 
+```{r}
+# keep sites covered at least 15 times 
+BS_filtered <- na.omit(BS) %>%
+  mutate(total_count = count_methylated + count_unmethylated) %>%
+  filter(total_count>15) %>%
+  mutate(mod_percentage = count_methylated / total_count) %>%
+  select("position","mod_percentage") 
+  
+
+ACE_filtered <- na.omit(ACE) %>%
+  mutate(total_count = count_methylated + count_unmethylated) %>%
+  filter(total_count>15) %>%
+  mutate(mod_percentage = count_methylated / total_count) %>%
+  select("position","mod_percentage") 
+  
+combined <- inner_join(BS_filtered, ACE_filtered, by = "position", suffix = c("_BS", "_ACE"))
+
+n_rows <- nrow(combined)
+combined_sample <- combined %>%
+  slice_sample(n = min(1000, n_rows)) %>%
+  mutate(
+    red_val  = rescale(mod_percentage_ACE, to = c(0, 1)),
+    blue_val = rescale(mod_percentage_BS, to = c(0, 1)),
+    color_mix = rgb(red_val, 0, blue_val)
+  )
+
+```
+
+
+```{r}
+
+# Pearson correlation 
+cor_val <- cor(combined$mod_percentage_BS, combined$mod_percentage_ACE, method = "pearson")
+
+# Styled plot 
+scatter_plot <- ggplot(combined_sample, aes(x = mod_percentage_ACE, y = mod_percentage_BS)) +
+  geom_point(aes(color = color_mix), alpha = 0.7, size = 2) +
+  scale_color_identity(guide = "none") +  # use colors directly, no legend
+  geom_smooth(
+    method = "lm",
+    se = FALSE,
+    color = "grey40",
+    linetype = "dashed",
+    alpha = 0.7
+  ) +
+  labs(
+    title = "ACE–BS Modification Correlation",
+    subtitle = paste("Pearson Correlation:", round(cor_val, 3)),
+    x = "ACE mod percentage",
+    y = "BS mod percentage"
+  ) +
+  theme_minimal() +
+  coord_fixed(ratio = 1) +
+  xlim(0, 1) +
+  ylim(0, 1) +
+  theme(
+    panel.background = element_rect(fill = NA),
+    legend.position = "right",
+    plot.title = element_text(face = "bold")
+  )
+
+# Save plot 
+ggsave(
+  filename = file.path("graphs", "YK_CxSAM_ACE_BS_Correlation.png"),
+  plot = scatter_plot,
+  width = 7, height = 6, dpi = 300, bg = "transparent"
+)
+
+print(scatter_plot)
+```
